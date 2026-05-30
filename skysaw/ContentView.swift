@@ -48,27 +48,39 @@ struct ContentView: View {
     @State private var baseAlpha: Double = 0.01
     @State private var envK: Double = 2.0
 
+    // MARK: - Subviews split out to help the type-checker
+    private var titleSection: some View {
+        Text("Mindful Motion")
+            .font(.largeTitle.bold())
+    }
+
+    private var metricsSection: some View {
+        VStack(spacing: 8) {
+            Text("Acceleration magnitude: " + String(format: "%.3f", motion.magnitude) + " g")
+                .font(.title3.monospacedDigit())
+            HStack(spacing: 16) {
+                MetricView(name: "x", value: motion.acceleration.x)
+                MetricView(name: "y", value: motion.acceleration.y)
+                MetricView(name: "z", value: motion.acceleration.z)
+            }
+        }
+    }
+
+    private var indicatorSection: some View {
+        let stepOpacity: Double = motion.didStep ? 1.0 : 0.0
+        return VStack(spacing: 8) {
+            Text("Step!")
+                .font(.callout)
+                .opacity(stepOpacity)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
     var body: some View {
         VStack(spacing: 24) {
-            Text("Mindful Motion")
-                .font(.largeTitle.bold())
-
-            VStack(spacing: 8) {
-                Text("Acceleration magnitude: \(motion.magnitude, specifier: "%.3f") g")
-                    .font(.title3.monospacedDigit())
-                HStack(spacing: 16) {
-                    MetricView(name: "x", value: motion.acceleration.x)
-                    MetricView(name: "y", value: motion.acceleration.y)
-                    MetricView(name: "z", value: motion.acceleration.z)
-                }
-            }
-
-            VStack(spacing: 8) {
-                Text(motion.didStep ? "Step!" : "")
-                    .font(.callout)
-                    .animation(.easeOut(duration: 0.2), value: motion.didStep)
-            }
-            .frame(maxWidth: .infinity)
+            titleSection
+            metricsSection
+            indicatorSection
 
             HStack(spacing: 12) {
                 Circle()
@@ -77,7 +89,6 @@ struct ContentView: View {
                     .overlay(
                         Circle().stroke(Color.secondary.opacity(0.6), lineWidth: 1)
                     )
-                    .animation(.easeOut(duration: 0.15), value: stepFlash)
                 Text(stepFlash ? "Step!" : "Waiting for step")
                     .font(.caption)
                     .foregroundStyle(stepFlash ? .green : .secondary)
@@ -99,21 +110,18 @@ struct ContentView: View {
             .accessibilityLabel("Step indicator and simulate step")
 
             HStack(spacing: 12) {
-                ForEach(DetectMode.allCases, id: \.self) { m in
-                    Button {
-                        selectMode(m)
-                    } label: {
+                ForEach(Array(DetectMode.allCases), id: \.self) { m in
+                    let isSelected = (mode == m)
+                    Button(action: { selectMode(m) }) {
                         Text(m.rawValue)
                             .font(.headline)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
                     }
                     .buttonStyle(.borderedProminent)
-                    .tint(mode == m ? .blue : .gray)
+                    .tint(isSelected ? .blue : .gray)
                 }
-                Button {
-                    stopAll()
-                } label: {
+                Button(action: { stopAll() }) {
                     Label("Stop", systemImage: "stop.fill")
                         .font(.headline)
                         .padding(.horizontal, 12)
@@ -136,15 +144,19 @@ struct ContentView: View {
         }
         .onChange(of: motion.didStep) { _, newValue in
             guard newValue else { return }
-            // Flash the indicator
-            stepFlash = true
+            withAnimation(.easeOut(duration: 0.2)) {
+                // Flash the indicator
+                stepFlash = true
+            }
             // Trigger the blip only if audio is active
             if isActive {
                 sound.playStepBlip()
             }
             // Auto-reset the indicator after a short delay
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                stepFlash = false
+                withAnimation(.easeOut(duration: 0.2)) {
+                    stepFlash = false
+                }
             }
         }
         .onChange(of: motion.acceleration) { _, acc in
@@ -152,27 +164,41 @@ struct ContentView: View {
             let ts = Date().timeIntervalSince1970
             switch mode {
             case .peak:
-                // magnitude relative to ~g
-                let mag = max(0.0, sqrt(acc.x*acc.x + acc.y*acc.y + acc.z*acc.z) - 1.0)
-                if !aboveHigh && mag > peakHigh { aboveHigh = true; trigger(at: ts) }
-                if aboveHigh && mag < peakLow { aboveHigh = false }
-            case .zero:
-                // simple high-pass then low-pass to band-limit
-                let hpAlpha = 0.05 // hp strength
-                let lpAlpha = 0.2  // lp smoothing
+                let x = acc.x
+                let y = acc.y
                 let z = acc.z
-                zHP = (1 - hpAlpha) * zHP + hpAlpha * z
-                let hp = z - zHP
-                zBP = (1 - lpAlpha) * zBP + lpAlpha * hp
-                let crossedUp = (prevZBP <= 0 && zBP > 0)
+                let magSquared = x*x + y*y + z*z
+                let mag = max(0.0, sqrt(magSquared) - 1.0)
+                if !aboveHigh && mag > peakHigh {
+                    aboveHigh = true
+                    trigger(at: ts)
+                }
+                if aboveHigh && mag < peakLow {
+                    aboveHigh = false
+                }
+            case .zero:
+                let hpAlpha: Double = 0.05
+                let lpAlpha: Double = 0.2
+                let z = acc.z
+                let newZHP = (1 - hpAlpha) * zHP + hpAlpha * z
+                let hp = z - newZHP
+                let newZBP = (1 - lpAlpha) * zBP + lpAlpha * hp
+                let crossedUp = (prevZBP <= 0 && newZBP > 0)
                 if crossedUp { trigger(at: ts) }
-                prevZBP = zBP
+                zHP = newZHP
+                prevZBP = newZBP
+                zBP = newZBP
             case .energy:
-                let mag = sqrt(acc.x*acc.x + acc.y*acc.y + acc.z*acc.z)
-                env = (1 - envAlpha) * env + envAlpha * abs(mag - 1.0)
-                baseline = (1 - baseAlpha) * baseline + baseAlpha * env
-                let thresh = envK * max(baseline, 1e-6)
-                if env > thresh { trigger(at: ts) }
+                let x = acc.x
+                let y = acc.y
+                let z = acc.z
+                let mag = sqrt(x*x + y*y + z*z)
+                let newEnv = (1 - envAlpha) * env + envAlpha * abs(mag - 1.0)
+                let newBaseline = (1 - baseAlpha) * baseline + baseAlpha * newEnv
+                let thresh = envK * max(newBaseline, 1e-6)
+                if newEnv > thresh { trigger(at: ts) }
+                env = newEnv
+                baseline = newBaseline
             }
         }
         .onChange(of: uiGain) { _, v in sound.gain = v }
