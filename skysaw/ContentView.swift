@@ -9,6 +9,12 @@ import SwiftUI
 import CoreMotion
 import Combine
 
+extension CMAcceleration: Equatable {
+    public static func == (lhs: CMAcceleration, rhs: CMAcceleration) -> Bool {
+        lhs.x == rhs.x && lhs.y == rhs.y && lhs.z == rhs.z
+    }
+}
+
 struct ContentView: View {
     @StateObject private var motion: MotionService
     @StateObject private var sound: SoundEngine
@@ -28,7 +34,7 @@ struct ContentView: View {
     @State private var uiFrequency: Double = 40.0
     @State private var stepFlash: Bool = false
 
-    private enum DetectMode: String, CaseIterable { case peak = "Peak", zero = "Zero-Cross", energy = "Energy" }
+    private enum DetectMode: String, CaseIterable, Identifiable { case peak = "Peak", zero = "Zero-Cross", energy = "Energy"; var id: String { rawValue } }
     @State private var mode: DetectMode? = nil // nil = stopped
     // Detector state
     @State private var lastTriggerTime: TimeInterval = 0
@@ -49,12 +55,12 @@ struct ContentView: View {
     @State private var envK: Double = 2.0
 
     // MARK: - Subviews split out to help the type-checker
-    private var titleSection: some View {
+    @ViewBuilder private var titleSection: some View {
         Text("Mindful Motion")
             .font(.largeTitle.bold())
     }
 
-    private var metricsSection: some View {
+    @ViewBuilder private var metricsSection: some View {
         VStack(spacing: 8) {
             Text("Acceleration magnitude: " + String(format: "%.3f", motion.magnitude) + " g")
                 .font(.title3.monospacedDigit())
@@ -66,152 +72,156 @@ struct ContentView: View {
         }
     }
 
+    @ViewBuilder
     private var indicatorSection: some View {
-        let stepOpacity: Double = motion.didStep ? 1.0 : 0.0
-        return VStack(spacing: 8) {
-            Text("Step!")
-                .font(.callout)
-                .opacity(stepOpacity)
-        }
-        .frame(maxWidth: .infinity)
+        StepIndicatorView(isOn: motion.didStep)
+            .frame(maxWidth: .infinity)
     }
 
-    var body: some View {
-        VStack(spacing: 24) {
-            titleSection
-            metricsSection
-            indicatorSection
-
-            HStack(spacing: 12) {
-                Circle()
-                    .fill(stepFlash ? Color.green : Color.gray.opacity(0.3))
-                    .frame(width: 16, height: 16)
-                    .overlay(
-                        Circle().stroke(Color.secondary.opacity(0.6), lineWidth: 1)
-                    )
-                Text(stepFlash ? "Step!" : "Waiting for step")
+    @ViewBuilder
+    private var simulateSection: some View {
+        HStack(spacing: 12) {
+            Circle()
+                .fill(stepFlash ? Color.green : Color.gray.opacity(0.3))
+                .frame(width: 16, height: 16)
+                .overlay(
+                    Circle().stroke(Color.secondary.opacity(0.6), lineWidth: 1)
+                )
+            Text(stepFlash ? "Step!" : "Waiting for step")
+                .font(.caption)
+                .foregroundStyle(stepFlash ? .green : .secondary)
+            Spacer()
+            Button {
+                // Simulate a step: flash indicator and play sound if active
+                stepFlash = true
+                if isActive { sound.playStepBlip() }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    stepFlash = false
+                }
+            } label: {
+                Label("Simulate Step", systemImage: "figure.walk")
                     .font(.caption)
-                    .foregroundStyle(stepFlash ? .green : .secondary)
-                Spacer()
-                Button {
-                    // Simulate a step: flash indicator and play sound if active
-                    stepFlash = true
-                    if isActive { sound.playStepBlip() }
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                        stepFlash = false
-                    }
-                } label: {
-                    Label("Simulate Step", systemImage: "figure.walk")
-                        .font(.caption)
-                        .padding(8)
-                }
-                .buttonStyle(.bordered)
+                    .padding(8)
             }
-            .accessibilityLabel("Step indicator and simulate step")
+            .buttonStyle(.bordered)
+        }
+        .accessibilityLabel("Step indicator and simulate step")
+    }
 
-            HStack(spacing: 12) {
-                ForEach(Array(DetectMode.allCases), id: \.self) { m in
-                    let isSelected = (mode == m)
-                    Button(action: { selectMode(m) }) {
-                        Text(m.rawValue)
-                            .font(.headline)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(isSelected ? .blue : .gray)
-                }
-                Button(action: { stopAll() }) {
-                    Label("Stop", systemImage: "stop.fill")
+    @ViewBuilder
+    private var modeButtonsSection: some View {
+        HStack(spacing: 12) {
+            ForEach(DetectMode.allCases) { m in
+                let isSelected = (mode == m)
+                Button(action: { selectMode(m) }) {
+                    Text(m.rawValue)
                         .font(.headline)
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                 }
-                .buttonStyle(.bordered)
-                .tint(.red)
+                .buttonStyle(.borderedProminent)
+                .tint(isSelected ? .blue : .gray)
             }
-        }
-        .padding()
-        .onAppear {
-            motion.start()
-            // Sync UI from engine
-            uiGain = sound.gain
-            uiStepInterval = sound.stepInterval
-            uiQuietInterval = sound.quietInterval
-            uiAttack = sound.attack
-            uiDecay = sound.decay
-            uiFrequency = sound.blipFrequency
-        }
-        .onChange(of: motion.didStep) { _, newValue in
-            guard newValue else { return }
-            withAnimation(.easeOut(duration: 0.2)) {
-                // Flash the indicator
-                stepFlash = true
+            Button(action: { stopAll() }) {
+                Label("Stop", systemImage: "stop.fill")
+                    .font(.headline)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
             }
-            // Trigger the blip only if audio is active
-            if isActive {
-                sound.playStepBlip()
-            }
-            // Auto-reset the indicator after a short delay
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                withAnimation(.easeOut(duration: 0.2)) {
-                    stepFlash = false
-                }
-            }
+            .buttonStyle(.bordered)
+            .tint(.red)
         }
-        .onChange(of: motion.acceleration) { _, acc in
-            guard let mode else { return }
-            let ts = Date().timeIntervalSince1970
-            switch mode {
-            case .peak:
-                let x = acc.x
-                let y = acc.y
-                let z = acc.z
-                let magSquared = x*x + y*y + z*z
-                let mag = max(0.0, sqrt(magSquared) - 1.0)
-                if !aboveHigh && mag > peakHigh {
-                    aboveHigh = true
-                    trigger(at: ts)
-                }
-                if aboveHigh && mag < peakLow {
-                    aboveHigh = false
-                }
-            case .zero:
-                let hpAlpha: Double = 0.05
-                let lpAlpha: Double = 0.2
-                let z = acc.z
-                let newZHP = (1 - hpAlpha) * zHP + hpAlpha * z
-                let hp = z - newZHP
-                let newZBP = (1 - lpAlpha) * zBP + lpAlpha * hp
-                let crossedUp = (prevZBP <= 0 && newZBP > 0)
-                if crossedUp { trigger(at: ts) }
-                zHP = newZHP
-                prevZBP = newZBP
-                zBP = newZBP
-            case .energy:
-                let x = acc.x
-                let y = acc.y
-                let z = acc.z
-                let mag = sqrt(x*x + y*y + z*z)
-                let newEnv = (1 - envAlpha) * env + envAlpha * abs(mag - 1.0)
-                let newBaseline = (1 - baseAlpha) * baseline + baseAlpha * newEnv
-                let thresh = envK * max(newBaseline, 1e-6)
-                if newEnv > thresh { trigger(at: ts) }
-                env = newEnv
-                baseline = newBaseline
+    }
+
+    var body: some View {
+        mainContent
+    }
+
+    @ViewBuilder
+    private var mainContent: some View {
+        let stack = VStack(spacing: 24) {
+            titleSection
+            metricsSection
+            indicatorSection
+            simulateSection
+            modeButtonsSection
+        }
+        stack
+            .padding()
+            .onAppear(perform: handleOnAppear)
+            .onChange(of: motion.didStep, handleDidStepChange)
+            .onChange(of: motion.acceleration, initial: false) { old, new in
+                handleAccelerationChange(old, new)
             }
+            .onChange(of: uiGain) { _, v in sound.gain = v }
+            .onChange(of: uiStepInterval) { _, v in sound.stepInterval = v }
+            .onChange(of: uiQuietInterval) { _, v in sound.quietInterval = v }
+            .onChange(of: uiAttack) { _, v in sound.attack = v }
+            .onChange(of: uiDecay) { _, v in sound.decay = v }
+            .onChange(of: uiFrequency) { _, v in sound.blipFrequency = v }
+            .onDisappear(perform: handleOnDisappear)
+    }
+
+    private func handleOnAppear() {
+        motion.start()
+        uiGain = sound.gain
+        uiStepInterval = sound.stepInterval
+        uiQuietInterval = sound.quietInterval
+        uiAttack = sound.attack
+        uiDecay = sound.decay
+        uiFrequency = sound.blipFrequency
+    }
+
+    private func handleDidStepChange(_ old: Bool, _ newValue: Bool) {
+        guard newValue else { return }
+        withAnimation(.easeOut(duration: 0.2)) { stepFlash = true }
+        if isActive { sound.playStepBlip() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            withAnimation(.easeOut(duration: 0.2)) { stepFlash = false }
         }
-        .onChange(of: uiGain) { _, v in sound.gain = v }
-        .onChange(of: uiStepInterval) { _, v in sound.stepInterval = v }
-        .onChange(of: uiQuietInterval) { _, v in sound.quietInterval = v }
-        .onChange(of: uiAttack) { _, v in sound.attack = v }
-        .onChange(of: uiDecay) { _, v in sound.decay = v }
-        .onChange(of: uiFrequency) { _, v in sound.blipFrequency = v }
-        .onDisappear {
-            motion.stop()
-            sound.stop()
-            isActive = false
+    }
+
+    private func handleAccelerationChange(_ old: CMAcceleration, _ acc: CMAcceleration) {
+        guard let mode else { return }
+        let ts = Date().timeIntervalSince1970
+        switch mode {
+        case .peak:
+            let x = acc.x, y = acc.y, z = acc.z
+            let magSquared = x*x + y*y + z*z
+            let mag = max(0.0, sqrt(magSquared) - 1.0)
+            if !aboveHigh && mag > peakHigh {
+                aboveHigh = true
+                trigger(at: ts)
+            }
+            if aboveHigh && mag < peakLow { aboveHigh = false }
+        case .zero:
+            let hpAlpha: Double = 0.05
+            let lpAlpha: Double = 0.2
+            let z = acc.z
+            let newZHP = (1 - hpAlpha) * zHP + hpAlpha * z
+            let hp = z - newZHP
+            let newZBP = (1 - lpAlpha) * zBP + lpAlpha * hp
+            let crossedUp = (prevZBP <= 0 && newZBP > 0)
+            if crossedUp { trigger(at: ts) }
+            zHP = newZHP
+            prevZBP = newZBP
+            zBP = newZBP
+        case .energy:
+            let x = acc.x, y = acc.y, z = acc.z
+            let mag = sqrt(x*x + y*y + z*z)
+            let newEnv = (1 - envAlpha) * env + envAlpha * abs(mag - 1.0)
+            let newBaseline = (1 - baseAlpha) * baseline + baseAlpha * newEnv
+            let thresh = envK * max(newBaseline, 1e-6)
+            if newEnv > thresh { trigger(at: ts) }
+            env = newEnv
+            baseline = newBaseline
         }
+    }
+
+    private func handleOnDisappear() {
+        motion.stop()
+        sound.stop()
+        isActive = false
     }
 
     // MARK: - Detection
@@ -257,6 +267,20 @@ private struct MetricView: View {
         .padding(8)
         .background(.thinMaterial)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+private struct StepIndicatorView: View {
+    let isOn: Bool
+
+    var body: some View {
+        VStack(spacing: 8) {
+            // Keep this simple to help the type-checker
+            let opacity: Double = isOn ? 1.0 : 0.0
+            Text("Step!")
+                .font(.callout)
+                .opacity(opacity)
+        }
     }
 }
 
